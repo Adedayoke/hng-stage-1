@@ -197,6 +197,175 @@ app.get("/strings", async (req, res) => {
   }
 });
 
+// Helper function to parse natural language queries
+function parseNaturalLanguageQuery(query) {
+  const lowerQuery = query.toLowerCase().trim();
+  const filters = {};
+
+  // Check for palindrome
+  if (lowerQuery.includes("palindrome") || lowerQuery.includes("palindromic")) {
+    filters.is_palindrome = true;
+  }
+
+  // Check for word count patterns
+  if (lowerQuery.includes("single word") || lowerQuery.includes("one word")) {
+    filters.word_count = 1;
+  } else if (lowerQuery.includes("two word")) {
+    filters.word_count = 2;
+  } else if (lowerQuery.includes("three word")) {
+    filters.word_count = 3;
+  } else if (lowerQuery.includes("four word")) {
+    filters.word_count = 4;
+  } else if (lowerQuery.includes("five word")) {
+    filters.word_count = 5;
+  }
+
+  // Check for length filters
+  const longerThanMatch = lowerQuery.match(/longer than (\d+)/);
+  const moreThanMatch = lowerQuery.match(/more than (\d+) character/);
+  const atLeastMatch = lowerQuery.match(/at least (\d+) character/);
+  
+  if (longerThanMatch) {
+    filters.min_length = parseInt(longerThanMatch[1]) + 1;
+  } else if (moreThanMatch) {
+    filters.min_length = parseInt(moreThanMatch[1]) + 1;
+  } else if (atLeastMatch) {
+    filters.min_length = parseInt(atLeastMatch[1]);
+  }
+
+  const shorterThanMatch = lowerQuery.match(/shorter than (\d+)/);
+  const lessThanMatch = lowerQuery.match(/less than (\d+) character/);
+  const atMostMatch = lowerQuery.match(/at most (\d+) character/);
+  
+  if (shorterThanMatch) {
+    filters.max_length = parseInt(shorterThanMatch[1]) - 1;
+  } else if (lessThanMatch) {
+    filters.max_length = parseInt(lessThanMatch[1]) - 1;
+  } else if (atMostMatch) {
+    filters.max_length = parseInt(atMostMatch[1]);
+  }
+
+  // Check for character containment
+  const letterMatch = lowerQuery.match(/letter ([a-z])/);
+  const characterMatch = lowerQuery.match(/character ([a-z])/);
+  const containsMatch = lowerQuery.match(/contains ([a-z])\b/);
+  
+  if (letterMatch) {
+    filters.contains_character = letterMatch[1];
+  } else if (characterMatch) {
+    filters.contains_character = characterMatch[1];
+  } else if (containsMatch) {
+    filters.contains_character = containsMatch[1];
+  }
+
+  // Handle vowel references
+  if (lowerQuery.includes("first vowel")) {
+    filters.contains_character = "a";
+  } else if (lowerQuery.includes("second vowel")) {
+    filters.contains_character = "e";
+  } else if (lowerQuery.includes("third vowel")) {
+    filters.contains_character = "i";
+  } else if (lowerQuery.includes("fourth vowel")) {
+    filters.contains_character = "o";
+  } else if (lowerQuery.includes("last vowel") || lowerQuery.includes("fifth vowel")) {
+    filters.contains_character = "u";
+  }
+
+  return Object.keys(filters).length > 0 ? filters : null;
+}
+
+// Helper function to check for conflicting filters
+function hasConflicts(filters) {
+  // Check if min_length > max_length
+  if (filters.min_length && filters.max_length) {
+    if (filters.min_length > filters.max_length) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Helper function to build MongoDB filter from parsed filters
+function buildMongoFilterFromNL(parsedFilters) {
+  const filter = {};
+
+  if (parsedFilters.is_palindrome !== undefined) {
+    filter["properties.is_palindrome"] = parsedFilters.is_palindrome;
+  }
+
+  if (parsedFilters.min_length) {
+    filter["properties.length"] = filter["properties.length"] || {};
+    filter["properties.length"].$gte = parsedFilters.min_length;
+  }
+
+  if (parsedFilters.max_length) {
+    filter["properties.length"] = filter["properties.length"] || {};
+    filter["properties.length"].$lte = parsedFilters.max_length;
+  }
+
+  if (parsedFilters.word_count) {
+    filter["properties.word_count"] = parsedFilters.word_count;
+  }
+
+  if (parsedFilters.contains_character) {
+    filter[`properties.character_frequency_map.${parsedFilters.contains_character}`] = {
+      $exists: true,
+    };
+  }
+
+  return filter;
+}
+
+// Natural Language Filtering endpoint with AI
+app.get("/strings/filter-by-natural-language", async (req, res) => {
+  try {
+    const { query } = req.query;
+
+    if (!query || query.trim() === "") {
+      return res.status(400).json({
+        error: "Unable to parse natural language query",
+      });
+    }
+
+    console.log("Received NL query:", query);
+
+    // Parse the natural language query
+    const parsedFilters = parseNaturalLanguageQuery(query);
+
+    if (!parsedFilters) {
+      return res.status(400).json({
+        error: "Unable to parse natural language query",
+      });
+    }
+
+    // Check for conflicting filters
+    if (hasConflicts(parsedFilters)) {
+      return res.status(422).json({
+        error: "Query parsed but resulted in conflicting filters",
+      });
+    }
+
+    // Build MongoDB filter
+    const mongoFilter = buildMongoFilterFromNL(parsedFilters);
+
+    // Query the database
+    const strings = await ValueModel.find(mongoFilter).lean();
+
+    return res.json({
+      data: strings,
+      count: strings.length,
+      interpreted_query: {
+        original: query,
+        parsed_filters: parsedFilters,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+
+
 app.get("/strings/:string_value", async (req, res) => {
   try {
     const { string_value } = req.params;
@@ -251,6 +420,8 @@ app.delete("/strings/:string_value", async (req, res) => {
     return res.status(500).json({ error: "Internal Server Error" });
   }
 });
+
+
 app.listen(3000, () => {
   console.log(process.env.PORT);
   console.log(`Server running on PORT ${PORT}`);
