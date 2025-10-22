@@ -42,9 +42,6 @@ function getCharactersMap(stringRecieved) {
 
   for (let i = 0; i < stringRecieved.length; i++) {
     let currentVal = stringRecieved[i];
-    if (currentVal === " ") {
-      continue;
-    }
     obj[currentVal] ? obj[currentVal]++ : (obj[currentVal] = 1);
   }
 
